@@ -13,7 +13,7 @@ ADMIN_USER_ID = 5080529808
 
 # ===== تنظیمات شاد (Shad) - از DevTools گرفته شد =====
 SHAD_UPLOAD_URL = "https://upshst577.iranlms.ir/UploadFile.ashx"
-SHAD_AUTH="qfqtlljdcwrdgiyiobgwqfrfpwkkbvms"
+SHAD_AUTH = "qfqtlljdcwrdgiyiobgwqfrfpwkkbvms"
 SHAD_ACCESS_HASH = "aroifvnrqcohdyssnrsdvafdgu7392"
 SHAD_CHANNEL_ID = "c0CuNJ0e7c1dc95b06564d0663118ea3"   # آیدی کانال شاد (از لینک web.shad.ir/#c=)
 SHAD_CHUNK = 131072    # 128 KB
@@ -21,7 +21,7 @@ SHAD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 # ===================================================
 
 BOT_USERNAME = "@Danloderebot"
-CREATOR_USERNAME = "@thehadimoradi"
+CREATOR_USERNAME = "@hadi_dev"
 
 async def download_instagram_reel(url: str) -> tuple:
     ydl_opts = {'format': 'best', 'outtmpl': 'downloads/%(id)s.%(ext)s', 'noplaylist': True}
@@ -77,7 +77,7 @@ def find_song(song_query: str) -> str | None:
             if info.get('entries'):
                 entry = info['entries'][0]
                 filename = ydl.prepare_filename(entry)
-                base = os.path.sitext(filename)[0]
+                base = os.path.splitext(filename)[0]
                 mp3 = base + '.mp3'
                 if os.path.exists(mp3):
                     return mp3
@@ -128,16 +128,27 @@ def upload_to_shad(filename: str) -> dict | None:
         return None
 
 def send_to_shad_channel(file_id: str, access_hash: str) -> bool:
-    """تلاش برای ارسال فایل آپلود شده به کانال شاد."""
+    """تلاش برای ارسال فایل آپلود شده به کانال شاد.
+    شاد endpoint رسمی نداره؛ چند تا حالت منطقی رو امتحان می‌کنیم.
+    """
     import requests, json
     payloads = [
-        {'file_id': file_id, 'access_hash': access_hash, 'chat_id': SHAD_CHANNEL_ID, 'type': 'video'},
-        {'file': {'file_id': file_id, 'access_hash': access_hash}, 'chat_id': SHAD_CHANNEL_ID, 'type': 'video'},
+        {
+            'file_id': file_id,
+            'access_hash': access_hash,
+            'chat_id': SHAD_CHANNEL_ID,
+            'type': 'video',
+        },
+        {
+            'file': {'file_id': file_id, 'access_hash': access_hash},
+            'chat_id': SHAD_CHANNEL_ID,
+            'type': 'video',
+        },
     ]
     endpoints = [
         "https://api.shad.ir/v2/sendMessage",
         "https://api.shad.ir/sendMessage",
-        "https://upshst577.iranlms.ir/sendMessage.ashx",
+        f"https://upshst577.iranlms.ir/sendMessage.ashx",
     ]
     headers = {
         'auth': SHAD_AUTH,
@@ -190,6 +201,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin:
         txt += "\n\n🔐 *(شما ادمین هستید - دکمه آپلود به شاد برات فعاله)*"
     await update.message.reply_text(txt, parse_mode="Markdown")
+
 async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     role = "🔐 ادمین" if uid == ADMIN_USER_ID else "👤 کاربر عادی"
@@ -267,7 +279,7 @@ async def shad_upload_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     filename = context.user_data.get('last_file')
     if not filename or not os.path.exists(filename):
-    await q.edit_message_text("❌ فایلی برای آپلود نداری. اول یه ویدیو دانلود کن.")
+        await q.edit_message_text("❌ فایلی برای آپلود نداری. اول یه ویدیو دانلود کن.")
         return
 
     await q.edit_message_text("⏳ **در حال آپلود به شاد...**\n📤 در حال ارسال تکه‌ها...", parse_mode="Markdown")
