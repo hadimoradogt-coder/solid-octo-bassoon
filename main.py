@@ -170,8 +170,60 @@ def find_song_youtube(query: str) -> str | None:
             logger.error(f"yt search '{q}': {e}")
     return None
 
+async def recognize_song_multi(audio_path: str) -> dict | None:
+    """تشخیص آهنگ با شازام روی چند بخش مختلف صدا (احتمال تشخیص بالاتر)"""
+    import subprocess as _sp
+    import re as _re
+    # گرفتن مدت صدا
+    try:
+        dur_raw = _sp.run([FFMPEG_PATH, '-i', audio_path], capture_output=True, text=True).stderr
+        m = _re.search(r'Duration: (\d+):(\d+):(\d+)', dur_raw)
+        total = 0
+        if m:
+            h, mi, s = map(int, m.groups())
+            total = h * 3600 + mi * 60 + s
+    except Exception:
+        total = 0
+    # بخش‌های مختلف برای شازام
+    if total <= 12:
+        cuts = [0]
+    else:
+        cuts = [3, total // 3, (2 * total) // 3, max(3, total - 8)]
+    segments = []
+    for i, start in enumerate(cuts):
+        seg = f'downloads/_seg_{i}.mp3'
+        try:
+            _sp.run([FFMPEG_PATH, '-y', '-ss', str(start), '-i', audio_path, '-t', '12', '-vn', seg],
+                    capture_output=True, text=True)
+            if os.path.exists(seg) and os.path.getsize(seg) > 1000:
+                segments.append(seg)
+        except Exception:
+            pass
+    # شازام روی هر بخش
+    from shazamio import Shazam
+    shazam = Shazam()
+    for seg in segments:
+        try:
+            out = await shazam.recognize(seg)
+            track = out.get('track', {})
+            title = track.get('title')
+            artist = track.get('subtitle') or (track.get('artists') or [{}])[0].get('name')
+            if title:
+                # پاک کردن سگمنت‌ها
+                for s in segments:
+                    try: os.remove(s)
+                    except Exception: pass
+                return {'title': title, 'artist': artist or '', 'source': 'shazam'}
+        except Exception as e:
+            logger.error(f"shazam seg {seg}: {e}")
+    # پاک کردن سگمنت‌ها
+    for s in segments:
+        try: os.remove(s)
+        except Exception: pass
+    return None
+
 async def recognize_song(audio_path: str) -> dict | None:
-    """تشخیص آهنگ از روی صدا با shazamio"""
+    """تشخیص آهنگ از روی صدا با shazamio (تک بخش - فال‌بک)"""
     try:
         from shazamio import Shazam
         shazam = Shazam()
@@ -353,7 +405,9 @@ async def find_song_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     song = None
     if audio:
-        song = await recognize_song(audio)
+        song = await recognize_song_multi(audio)
+        if not song:
+            song = await recognize_song(audio)
         try:
             os.remove(audio)
         except Exception:
