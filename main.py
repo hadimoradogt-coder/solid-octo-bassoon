@@ -2,7 +2,6 @@ import os
 import re
 import logging
 import asyncio
-import subprocess
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -14,39 +13,27 @@ BOT_TOKEN='7651648073:AAEYmoldWDZOaV4VI8bVlO2cJrd8IGOu294'
 BOT_USERNAME = "@Danloderebot"
 CREATOR_USERNAME = "@thehadimoradi"
 
-def find_ffmpeg() -> str | None:
-    try:
-        r = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
-    except Exception:
-        pass
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        pass
-    return None
-
-FFMPEG_PATH = find_ffmpeg()
-if FFMPEG_PATH:
-    os.environ['FFMPEG_BINARY'] = FFMPEG_PATH
-    logger.info(f"ffmpeg found: {FFMPEG_PATH}")
-else:
-    logger.warning("ffmpeg NOT found - audio features will fail")
-
-def extract_instagram_urls(text: str) -> list:
-    """استخراج همه لینک‌های اینستاگرام از یک پیام"""
-    pattern = r'(https?://)?(www\.)?(instagram\.com|instagr\.am)/(p|reel|tv)/([A-Za-z0-9_-]+)'
-    found = re.findall(pattern, text)
+def extract_supported_urls(text: str) -> list:
+    """استخراج لینک‌های پشتیبانی‌شده: اینستاگرام، تیک‌تاک، یوتیوب، اسپاتیفای"""
     urls = []
-    for m in found:
-        url = m[0] + m[1] + m[2] + '/' + m[3] + '/' + m[4]
-        if not url.startswith('http'):
-            url = 'https://' + url
-        if url not in urls:
-            urls.append(url)
+    for word in re.findall(r'https?://[^\s]+', text):
+        if any(s in word for s in ['instagram', 'instagr.am', 'tiktok', 'youtube', 'youtu.be', 'spotify']):
+            clean = word.rstrip('.,)')
+            if clean not in urls:
+                urls.append(clean)
     return urls
+
+def detect_source(url: str) -> str:
+    """تشخیص منبع لینک"""
+    if 'spotify' in url:
+        return 'spotify'
+    if 'tiktok' in url:
+        return 'tiktok'
+    if 'youtu' in url:
+        return 'youtube'
+    if 'instagram' in url or 'instagr.am' in url:
+        return 'instagram'
+    return 'unknown'
 
 def get_info(url: str) -> dict | None:
     try:
@@ -54,47 +41,6 @@ def get_info(url: str) -> dict | None:
             return ydl.extract_info(url, download=False)
     except Exception as e:
         logger.error(f"info error: {e}")
-        return None
-
-def get_audio(url: str, tag: str) -> str | None:
-    """استخراج صدای ویدیو به MP3 (بدون نیاز به ffprobe)"""
-    if not FFMPEG_PATH:
-        logger.error("ffmpeg missing - cannot extract audio")
-        return None
-    raw_tmpl = f'downloads/{tag}_raw_%(id)s.%(ext)s'
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': raw_tmpl,
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            fn = ydl.prepare_filename(info)
-            if not os.path.exists(fn):
-                vid = info.get('id', '')
-                for f in os.listdir('downloads'):
-                    if f.startswith(f'{tag}_raw') and vid[:6] in f:
-                        fn = os.path.join('downloads', f)
-                        break
-            if not os.path.exists(fn):
-                return None
-            mp3 = f'downloads/{tag}_audio.mp3'
-            cmd = [FFMPEG_PATH, '-y', '-i', fn, '-vn', '-ab', '192k', mp3]
-            r = subprocess.run(cmd, capture_output=True, text=True)
-            try:
-                os.remove(fn)
-            except Exception:
-                pass
-            if r.returncode == 0 and os.path.exists(mp3):
-                return mp3
-            else:
-                logger.error(f"ffmpeg convert failed: {r.stderr[:200]}")
-                return None
-    except Exception as e:
-        logger.error(f"audio error: {e}")
         return None
 
 def get_video(url: str, tag: str) -> list:
@@ -139,131 +85,6 @@ def get_video(url: str, tag: str) -> list:
         logger.error(f"video error: {e}")
     return files
 
-def find_song_youtube(query: str) -> str | None:
-    """جستجو و دانلود آهنگ از یوتیوب (با کوکی اگه موجود باشه)"""
-    if not query:
-        return None
-    cookie_opt = {'cookiefile': 'cookies.txt'} if os.path.exists('cookies.txt') else {}
-    ydl_opts = {
-        'quiet': True,
-        'noplaylist': True,
-        'format': 'bestaudio/best',
-        'outtmpl': 'downloads/song_%(id)s.%(ext)s',
-        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
-        **cookie_opt,
-    }
-    for q in [query, f"{query} official audio", f"{query} song"]:
-        ydl_opts['default_search'] = f"ytsearch1:{q}"
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch1:{q}", download=True)
-                if info.get('entries'):
-                    entry = info['entries'][0]
-                    fn = ydl.prepare_filename(entry)
-                    base = os.path.splitext(fn)[0] + '.mp3'
-                    if os.path.exists(base):
-                        return base
-                    for f in os.listdir('downloads'):
-                        if f.startswith('song_') and f.endswith('.mp3'):
-                            return os.path.join('downloads', f)
-        except Exception as e:
-            logger.error(f"yt search '{q}': {e}")
-    return None
-
-async def recognize_song_multi(audio_path: str) -> dict | None:
-    """تشخیص آهنگ با شازام روی چند بخش مختلف صدا (احتمال تشخیص بالاتر)"""
-    import subprocess as _sp
-    import re as _re
-    # گرفتن مدت صدا
-    try:
-        dur_raw = _sp.run([FFMPEG_PATH, '-i', audio_path], capture_output=True, text=True).stderr
-        m = _re.search(r'Duration: (\d+):(\d+):(\d+)', dur_raw)
-        total = 0
-        if m:
-            h, mi, s = map(int, m.groups())
-            total = h * 3600 + mi * 60 + s
-    except Exception:
-        total = 0
-    # بخش‌های مختلف برای شازام
-    if total <= 12:
-        cuts = [0]
-    else:
-        cuts = [3, total // 3, (2 * total) // 3, max(3, total - 8)]
-    segments = []
-    for i, start in enumerate(cuts):
-        seg = f'downloads/_seg_{i}.mp3'
-        try:
-            _sp.run([FFMPEG_PATH, '-y', '-ss', str(start), '-i', audio_path, '-t', '12', '-vn', seg],
-                    capture_output=True, text=True)
-            if os.path.exists(seg) and os.path.getsize(seg) > 1000:
-                segments.append(seg)
-        except Exception:
-            pass
-    # شازام روی هر بخش
-    from shazamio import Shazam
-    shazam = Shazam()
-    for seg in segments:
-        try:
-            out = await shazam.recognize(seg)
-            track = out.get('track', {})
-            title = track.get('title')
-            artist = track.get('subtitle') or (track.get('artists') or [{}])[0].get('name')
-            if title:
-                # پاک کردن سگمنت‌ها
-                for s in segments:
-                    try: os.remove(s)
-                    except Exception: pass
-                return {'title': title, 'artist': artist or '', 'source': 'shazam'}
-        except Exception as e:
-            logger.error(f"shazam seg {seg}: {e}")
-    # پاک کردن سگمنت‌ها
-    for s in segments:
-        try: os.remove(s)
-        except Exception: pass
-    return None
-
-async def recognize_song(audio_path: str) -> dict | None:
-    """تشخیص آهنگ از روی صدا با shazamio (تک بخش - فال‌بک)"""
-    try:
-        from shazamio import Shazam
-        shazam = Shazam()
-        out = await shazam.recognize(audio_path)
-        track = out.get('track', {})
-        title = track.get('title')
-        artist = track.get('subtitle') or (track.get('artists') or [{}])[0].get('name')
-        if title:
-            return {'title': title, 'artist': artist or '', 'source': 'shazam'}
-    except Exception as e:
-        logger.error(f"shazam: {e}")
-    return None
-
-def smart_guess_from_caption(info) -> str | None:
-    """استخراج هوشمندانه نام آهنگ از کپشن (فال‌بک وقتی شازام پیدا نکرد)"""
-    desc = (info.get('description') or '').strip()
-    title = (info.get('title') or '').strip()
-    text = desc or title
-    if not text:
-        return None
-    # الگوهای رایج نام آهنگ
-    patterns = [
-        r'(?:آهنگ|موزیک|song|music|track|نوحه|مداحی|سرود)\s*[:\-]\s*([^\n]+)',
-        r'🎵\s*([^\n]+)',
-        r'(?:by|از|خواننده|با)\s*[:\-]?\s*([^\n]+)',
-        r'♬\s*([^\n]+)',
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            return m.group(1).strip()[:80]
-    # حذف هشتگ و لینک و گرفتن اولین خط معنادار
-    for line in text.split('\n'):
-        line = line.strip()
-        line = re.sub(r'#\w+', '', line).strip()
-        line = re.sub(r'http\S+', '', line).strip()
-        if 3 < len(line) < 80:
-            return line
-    return None
-
 def build_caption(info) -> str:
     parts = []
     if info:
@@ -279,23 +100,16 @@ def build_caption(info) -> str:
     parts.append(f"\n🤖 {BOT_USERNAME}")
     return "\n".join(parts)
 
-def action_keyboard() -> InlineKeyboardMarkup:
-    kb = [
-        [InlineKeyboardButton("🟢 پیدا کردن آهنگ کلیپ", callback_data="find_song")],
-        [InlineKeyboardButton("🎵 دانلود صدا (MP3)", callback_data="get_mp3")],
-    ]
-    return InlineKeyboardMarkup(kb)
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
-        "🎬 **ربات دانلود اینستاگرام**\n\n"
-        "👇 لینک ریلز یا پست اینستاگرام رو بفرست (چندتا همزمان هم اوکیه) تا با بهترین کیفیت دانلودش کنم\n\n"
-        "✨ **قابلیت‌ها:**\n"
-        "• 🎬 دانلود چند لینک همزمان\n"
-        "• 🖼️ پشتیبانی از پست‌های چندتایی\n"
-        "• 🎵 دانلود صدای MP3\n"
-        "• 🟢 تشخیص و دانلود آهنگ (شازام + جستجوی هوشمند)\n\n"
-        "🔹 `https://www.instagram.com/reel/...`"
+        "🎬 **ربات دانلود ویدیو**\n\n"
+        "👇 لینک ویدیو رو بفرست (چندتا همزمان هم اوکیه) تا با بهترین کیفیت دانلودش کنم\n\n"
+        "✨ **پلتفرم‌های پشتیبانی‌شده:**\n"
+        "• 📸 اینستاگرام (رییلز/پست/استوری)\n"
+        "• 🎵 تیک‌تاک\n"
+        "• ▶️ یوتیوب (ویدیو/شورتس)\n"
+        "• 🟢 اسپاتیفای (فقط نمایش لینک)\n\n"
+        "🔹 چند لینک رو پشت سر هم بفرست تا همه رو بگیری!"
     )
     await update.message.reply_text(txt, parse_mode="Markdown")
 
@@ -311,12 +125,20 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     await update.message.reply_text(f"🆔 آیدی تلگرام شما:\n`{uid}`", parse_mode="Markdown")
 
-async def send_one_video(update: Update, url: str, index: int, total: int):
-    """دانلود و ارسال یک ویدیو (برای چند لینک)"""
-    status = await update.message.reply_text(f"⏳ **({index}/{total}) در حال دانلود...**\nلطفاً صبر کن 🎥", parse_mode="Markdown")
+async def send_one_media(update: Update, url: str, index: int, total: int):
+    """دانلود و ارسال یک مدیا (اینستاگرام/تیک‌تاک/یوتیوب)"""
+    source = detect_source(url)
+    status = await update.message.reply_text(f"⏳ **({index}/{total}) [{source}] در حال دانلود...**\nلطفاً صبر کن 🎥", parse_mode="Markdown")
+
+    # اسپاتیفای: فقط لینک رو میده
+    if source == 'spotify':
+        await status.edit_text(f"🟢 **لینک اسپاتیفای:**\n{url}\n\n⚠️ دانلود مستقیم اسپاتیفای پشتیبانی نمیشه (نیاز به اشتراک).", parse_mode="Markdown",
+                               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🟢 باز کردن در اسپاتیفای", url=url)]]))
+        return url
+
     info = await asyncio.to_thread(get_info, url)
     if not info:
-        await status.edit_text(f"❌ **({index}/{total}) لینک نامعتبره!**", parse_mode="Markdown")
+        await status.edit_text(f"❌ **({index}/{total}) لینک نامعتبره یا خصوصیه!**", parse_mode="Markdown")
         return None
     files = await asyncio.to_thread(get_video, url, 'dl')
     if not files:
@@ -326,7 +148,7 @@ async def send_one_video(update: Update, url: str, index: int, total: int):
     try:
         if len(files) == 1:
             with open(files[0], 'rb') as fh:
-                await update.message.reply_video(video=fh, supports_streaming=True, caption=caption, reply_markup=action_keyboard(), parse_mode="Markdown")
+                await update.message.reply_video(video=fh, supports_streaming=True, caption=caption, parse_mode="Markdown")
             os.remove(files[0])
         else:
             media = []
@@ -339,9 +161,8 @@ async def send_one_video(update: Update, url: str, index: int, total: int):
             await update.message.reply_media_group(media)
             for f in files:
                 os.remove(f)
-            await update.message.reply_text("✅ **آلبوم آماده شد!**\n\nبرای آهنگ/صدا از دکمه‌ها استفاده کن.", reply_markup=action_keyboard(), parse_mode="Markdown")
+            await update.message.reply_text("✅ **آلبوم آماده شد!**\n\n🤖 " + BOT_USERNAME, parse_mode="Markdown")
         await status.delete()
-        # ذخیره آخرین لینک برای دکمه‌ها
         return url
     except Exception as e:
         await update.message.reply_text(f"❌ خطا در ارسال ({index}/{total}): {str(e)[:100]}")
@@ -349,117 +170,19 @@ async def send_one_video(update: Update, url: str, index: int, total: int):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    urls = extract_instagram_urls(text)
+    urls = extract_supported_urls(text)
     if not urls:
-        await update.message.reply_text("❌ **فقط لینک اینستاگرام قبوله!**\nمثلاً:\n`https://www.instagram.com/reel/...`", parse_mode="Markdown")
+        await update.message.reply_text("❌ **فقط لینک اینستاگرام/تیک‌تاک/یوتیوب/اسپاتیفای قبوله!**", parse_mode="Markdown")
         return
 
     if len(urls) > 1:
         await update.message.reply_text(f"🔢 **{len(urls)} لینک پیدا شد!**\nدر حال دانلود همه‌شون... ⏳", parse_mode="Markdown")
 
-    last_url = None
     for i, url in enumerate(urls, 1):
-        last_url = await send_one_video(update, url, i, len(urls))
+        await send_one_media(update, url, i, len(urls))
 
-    if last_url:
-        context.user_data['url'] = last_url
-        context.user_data['info'] = await asyncio.to_thread(get_info, last_url)
-        if len(urls) > 1:
-            await update.message.reply_text("✅ **همه ویدیوها آماده شد!**\nبرای آهنگ/صدا روی دکمه آخرین ویدیو بزن.", parse_mode="Markdown")
-
-async def get_mp3_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data != "get_mp3":
-        return
-    url = context.user_data.get('url')
-    if not url:
-        await q.message.reply_text("❌ اول یه ویدیو دانلود کن.")
-        return
-    status = await q.message.reply_text("🎵 **در حال استخراج صدا...**\n⏳ لطفاً صبر کن", parse_mode="Markdown")
-    mp3 = await asyncio.to_thread(get_audio, url, 'mp3')
-    if not mp3:
-        await status.edit_text("❌ استخراج صدا ناموفق بود (احتمالاً ffmpeg روی سرور نصب نیست).", parse_mode="Markdown")
-        return
-    try:
-        with open(mp3, 'rb') as fh:
-            await q.message.reply_audio(audio=fh, caption=f"🎵 **صدای ویدیو**\n\n🤖 {BOT_USERNAME}")
-        os.remove(mp3)
-        await status.edit_text("✅ **صدای ویدیو ارسال شد!** 🎵", parse_mode="Markdown")
-    except Exception as e:
-        await status.edit_text(f"❌ خطا: {str(e)[:100]}", parse_mode="Markdown")
-
-async def find_song_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data != "find_song":
-        return
-    url = context.user_data.get('url')
-    info = context.user_data.get('info')
-    if not url:
-        await q.message.reply_text("❌ اول یه ویدیو دانلود کن.")
-        return
-
-    status = await q.message.reply_text("🟢 **در حال تشخیص آهنگ...**\n۱. از روی صدا (شازام) 🎧\n⏳ لطفاً صبر کن", parse_mode="Markdown")
-    audio = await asyncio.to_thread(get_audio, url, 'rec')
-
-    song = None
-    if audio:
-        song = await recognize_song_multi(audio)
-        if not song:
-            song = await recognize_song(audio)
-        try:
-            os.remove(audio)
-        except Exception:
-            pass
-
-    # فال‌بک: از کپشن
-    if not song and info:
-        guess = smart_guess_from_caption(info)
-        if guess:
-            await status.edit_text(f"🟡 **شازام پیدا نکرد، جستجو از کپشن:**\n`{guess}`\n⏳ در حال بررسی...", parse_mode="Markdown")
-            mp3 = await asyncio.to_thread(find_song_youtube, guess)
-            if mp3:
-                try:
-                    with open(mp3, 'rb') as fh:
-                        await q.message.reply_audio(audio=fh, title=guess[:64], caption=f"🎵 **{guess}**\n\n🤖 {BOT_USERNAME}")
-                    os.remove(mp3)
-                    await status.edit_text(f"✅ **آهنگ از روی کپشن پیدا و ارسال شد!** 🎵\n\n🤖 {BOT_USERNAME}", parse_mode="Markdown")
-                    return
-                except Exception as e:
-                    logger.error(f"send: {e}")
-            song = {'title': guess, 'artist': '', 'source': 'caption'}
-
-    if not song:
-        await status.edit_text("❌ نتونستم آهنگ رو پیدا کنم. احتمالاً موزیک اصلی نیست یا کپشن نامشخصه.", parse_mode="Markdown")
-        return
-
-    song_name = f"{song['title']} - {song['artist']}".strip(' -')
-    src = song.get('source', 'shazam')
-    await status.edit_text(f"🟢 **آهنگ پیدا شد** (از {src})! 🎵\n\n**{song_name}**\n\n⏳ در حال دانلود آهنگ...", parse_mode="Markdown")
-
-    mp3 = await asyncio.to_thread(find_song_youtube, song_name)
-    if mp3:
-        try:
-            with open(mp3, 'rb') as fh:
-                await q.message.reply_audio(audio=fh, title=song['title'][:64], performer=song.get('artist', '')[:64], caption=f"🎵 **{song_name}**\n\n🤖 {BOT_USERNAME}")
-            os.remove(mp3)
-            await status.edit_text(f"✅ **آهنگ دانلود و ارسال شد!** 🎵\n\n🤖 {BOT_USERNAME}", parse_mode="Markdown")
-            return
-        except Exception as e:
-            logger.error(f"send song: {e}")
-
-    import urllib.parse
-    qs = urllib.parse.quote(song_name)
-    kb = [
-        [InlineKeyboardButton("🟢 Spotify", url=f"https://open.spotify.com/search/{qs}")],
-        [InlineKeyboardButton("🟢 YouTube Music", url=f"https://music.youtube.com/search?q={qs}")],
-        [InlineKeyboardButton("🟢 Google", url=f"https://www.google.com/search?q={qs}+song")],
-    ]
-    await status.edit_text(
-        f"🟢 **آهنگ تشخیص داده شد:** `{song_name}`\n\n🔍 دانلود خودکار لغو شد (نیاز به کوکی یوتیوب). از لینک‌ها دانلود کن:",
-        reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
-    )
+    if len(urls) > 1:
+        await update.message.reply_text("✅ **همه مدیا آماده شد!**\n\n🤖 " + BOT_USERNAME, parse_mode="Markdown")
 
 def main():
     os.makedirs('downloads', exist_ok=True)
@@ -476,8 +199,6 @@ def main():
     application.add_handler(CommandHandler("contact", contact))
     application.add_handler(CommandHandler("myid", myid))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(get_mp3_cb, pattern="^get_mp3$"))
-    application.add_handler(CallbackQueryHandler(find_song_cb, pattern="^find_song$"))
     logger.info("🚀 ربات با موفقیت بالا اومد!")
     application.run_polling()
 
