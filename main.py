@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -34,6 +35,23 @@ async def download_instagram_reel(url: str) -> tuple:
         logger.error(f"Download Error: {e}")
         return None, None
 
+def extract_song_name(info) -> str | None:
+    desc = (info.get('description') or '').strip()
+    title = (info.get('title') or '').strip()
+    patterns = [
+        r'(?:آهنگ|موزیک|song|music|track)\s*[:\-]\s*([^\n]+)',
+        r'🎵\s*([^\n]+)',
+    ]
+    text = desc or title
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()[:80]
+    if desc:
+        words = desc.replace('\n', ' ').split()
+        return ' '.join(words[:10])[:80]
+    return None
+
 def build_caption(info) -> str:
     parts = []
     desc = (info.get('description') or '').strip()
@@ -50,8 +68,8 @@ def build_caption(info) -> str:
 
 def build_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton("🎵 پیدا کردن آهنگ کلیپ", url="https://shazam.com")],
-        [InlineKeyboardButton("👤 ارتباط با سازنده", url=f"https://t.me/{CREATOR_USERNAME.lstrip('@')}")],
+        [InlineKeyboardButton("🟢 پیدا کردن آهنگ کلیپ", callback_data="find_song")],
+        [InlineKeyboardButton("🔴 ارتباط با سازنده", url=f"https://t.me/{CREATOR_USERNAME.lstrip('@')}")],
     ]
     if is_admin:
         keyboard.append([InlineKeyboardButton("🔐 آپلود به شاد", callback_data="shad_upload")])
@@ -76,11 +94,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = build_keyboard(is_admin)
             await update.message.reply_video(video=open(file_path, 'rb'), caption=caption, reply_markup=keyboard, parse_mode="Markdown")
             context.user_data['last_file'] = file_path
+            context.user_data['last_info'] = info
             context.user_data['last_caption'] = caption
         else:
             await status_msg.edit_text("❌ **دانلود نشد!**\nلینک رو چک کن یا دوباره امتحان کن.", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ **فقط لینک ریلز اینستاگرام قبوله!**\nمثلاً:\n`https://www.instagram.com/reel/...`", parse_mode="Markdown")
+
+async def find_song_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data != "find_song":
+        return
+    info = context.user_data.get('last_info')
+    if not info:
+        await q.edit_message_text("❌ اول یه ویدیو دانلود کن تا آهنگش رو پیدا کنم.")
+        return
+    song_name = extract_song_name(info)
+    if not song_name:
+        await q.edit_message_text("❌ نتونستم اسم آهنگ رو از ویدیو پیدا کنم.")
+        return
+    import urllib.parse
+    q_encoded = urllib.parse.quote(song_name)
+    keyboard = [
+        [InlineKeyboardButton("🟢 جستجو در Shazam", url=f"https://www.shazam.com/search?q={q_encoded}")],
+        [InlineKeyboardButton("🟢 جستجو در YouTube Music", url=f"https://music.youtube.com/search?q={q_encoded}")],
+        [InlineKeyboardButton("🟢 جستجو در Spotify", url=f"https://open.spotify.com/search/{q_encoded}")],
+    ]
+    await q.edit_message_text(
+        f"🟢 **آهنگ احتمالی:**\n`{song_name}`\n\n🔍 برای پیدا کردن روی یه مورد بزن:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
 
 async def shad_upload_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -117,6 +162,7 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(find_song_callback, pattern="^find_song$"))
     application.add_handler(CallbackQueryHandler(shad_upload_callback, pattern="^shad_upload$"))
     logger.info("🚀 ربات با موفقیت بالا اومد!")
     application.run_polling()
