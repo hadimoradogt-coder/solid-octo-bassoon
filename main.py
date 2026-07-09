@@ -16,7 +16,7 @@ SHAD_HEADERS = {}
 SHAD_CHANNEL_ID = ""
 
 BOT_USERNAME = "@Danloderebot"
-CREATOR_USERNAME = "@thehadimoradi"
+CREATOR_USERNAME = "@hadi_dev"
 
 async def download_instagram_reel(url: str) -> tuple:
     ydl_opts = {'format': 'best', 'outtmpl': 'downloads/%(id)s.%(ext)s', 'noplaylist': True}
@@ -52,6 +52,36 @@ def extract_song_name(info) -> str | None:
         return ' '.join(words[:10])[:80]
     return None
 
+def find_song(song_query: str) -> str | None:
+    if not song_query:
+        return None
+    cookie_opt = {'cookiefile': 'cookies.txt'} if os.path.exists('cookies.txt') else {}
+    ydl_opts = {
+        'quiet': True,
+        'noplaylist': True,
+        'format': 'bestaudio/best',
+        'outtmpl': 'downloads/song_%(id)s.%(ext)s',
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+        'default_search': 'ytsearch1',
+        **cookie_opt,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{song_query}", download=True)
+            if info.get('entries'):
+                entry = info['entries'][0]
+                filename = ydl.prepare_filename(entry)
+                base = os.path.splitext(filename)[0]
+                mp3 = base + '.mp3'
+                if os.path.exists(mp3):
+                    return mp3
+                for f in os.listdir('downloads'):
+                    if f.startswith('song_') and f.endswith('.mp3'):
+                        return os.path.join('downloads', f)
+    except Exception as e:
+        logger.error(f"Song find error: {e}")
+    return None
+
 def build_caption(info) -> str:
     parts = []
     desc = (info.get('description') or '').strip()
@@ -65,7 +95,6 @@ def build_caption(info) -> str:
         parts.append(f"📝 **عنوان:** {title[:300]}")
     parts.append(f"\n🤖 {BOT_USERNAME}")
     return "\n".join(parts)
-
 def build_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("🟢 پیدا کردن آهنگ کلیپ", callback_data="find_song")],
@@ -110,19 +139,35 @@ async def find_song_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not info:
         await q.edit_message_text("❌ اول یه ویدیو دانلود کن تا آهنگش رو پیدا کنم.")
         return
-    song_name = extract_song_name(info)
-    if not song_name:
-        await q.edit_message_text("❌ نتونستم اسم آهنگ رو از ویدیو پیدا کنم.")
+    desc = (info.get('description') or '').strip()
+    title = (info.get('title') or '').strip()
+    clip_text = desc or title
+    if not clip_text:
+        await q.edit_message_text("❌ متنی توی ویدیو پیدا نشد که بتونم جستجو کنم.")
         return
-    import urllib.parse
-    q_encoded = urllib.parse.quote(song_name)
-    keyboard = [
-        [InlineKeyboardButton("🟢 جستجو در Shazam", url=f"https://www.shazam.com/search?q={q_encoded}")],
-        [InlineKeyboardButton("🟢 جستجو در YouTube Music", url=f"https://music.youtube.com/search?q={q_encoded}")],
-        [InlineKeyboardButton("🟢 جستجو در Spotify", url=f"https://open.spotify.com/search/{q_encoded}")],
-    ]
+    song_name = extract_song_name(info) or clip_text[:80]
     await q.edit_message_text(
-        f"🟢 **آهنگ احتمالی:**\n`{song_name}`\n\n🔍 برای پیدا کردن روی یه مورد بزن:",
+        f"🟢 **در حال جستجوی آهنگ...**\n🎵 `{song_name}`\n\n⏳ لطفاً صبر کن، دارم دانلودش می‌کنم...",
+        parse_mode="Markdown"
+    )
+    import asyncio, urllib.parse
+    filename = await asyncio.to_thread(find_song, song_name)
+    if filename:
+        try:
+            await q.message.reply_audio(audio=open(filename, 'rb'), title=song_name[:64], caption=f"🎵 **{song_name}**\n\n🤖 {BOT_USERNAME}")
+            os.remove(filename)
+            await q.edit_message_text(f"✅ **آهنگ پیدا و ارسال شد!** 🎵\n\n🤖 {BOT_USERNAME}", parse_mode="Markdown")
+            return
+        except Exception as e:
+            logger.error(f"Send song error: {e}")
+    q_song = urllib.parse.quote(song_name)
+    q_text = urllib.parse.quote(clip_text[:200])
+    keyboard = [
+        [InlineKeyboardButton("🟢 جستجوی آهنگ در Spotify", url=f"https://open.spotify.com/search/{q_song}")],
+        [InlineKeyboardButton("🟢 جستجوی آهنگ در Google", url=f"https://www.google.com/search?q={q_song}+song")],
+        [InlineKeyboardButton("🟢 جستجوی متن کلیپ در Google", url=f"https://www.google.com/search?q={q_text}")],
+    ]
+    await q.edit_message_text(f"🟢 **متن کلیپ استخراج شد:**\n`{clip_text[:200]}`\n\n🎵 **آهنگ احتمالی:** `{song_name}`\n\n🔍 دانلود خودکار لغو شد (نیاز به کوکی). برای پیدا کردن روی یه مورد بزن:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
