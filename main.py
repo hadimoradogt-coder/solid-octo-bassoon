@@ -13,7 +13,6 @@ BOT_TOKEN='7651648073:AAEYmoldWDZOaV4VI8bVlO2cJrd8IGOu294'
 BOT_USERNAME = "@Danloderebot"
 CREATOR_USERNAME = "@thehadimoradi"
 
-# نقشه کیفیت‌ها
 QUALITY_MAP = {
     'q_1080': ('best', '🎬 ۱۰۸۰'),
     'q_720':  ('best/best[height<=720]', '📺 ۷۲۰'),
@@ -22,14 +21,13 @@ QUALITY_MAP = {
 }
 
 def download_media(url: str, quality_key: str, tag: str) -> list:
-    """دانلود با کیفیت انتخابی. برمی‌گردونه لیست مسیر فایل‌ها."""
     fmt, label = QUALITY_MAP.get(quality_key, ('best', 'ویدیو'))
     is_audio = (quality_key == 'q_mp3')
     outtmpl = f'downloads/{tag}_%(id)s_%(playlist_index)02d.%(ext)s' if not is_audio else f'downloads/{tag}_%(id)s.%(ext)s'
     ydl_opts = {
         'format': fmt,
         'outtmpl': outtmpl,
-        'noplaylist': False,   # برای آلبوم‌های چندتایی
+        'noplaylist': False,
         'quiet': True,
         'no_warnings': True,
     }
@@ -39,7 +37,6 @@ def download_media(url: str, quality_key: str, tag: str) -> list:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            # اگر آلبوم چندتایی باشه
             entries = info.get('entries')
             if entries:
                 for e in entries:
@@ -53,7 +50,6 @@ def download_media(url: str, quality_key: str, tag: str) -> list:
                     elif os.path.exists(fn):
                         files.append(fn)
                     else:
-                        # جستجوی فایل مشابه
                         vid = e.get('id', '')
                         for f in os.listdir('downloads'):
                             if tag in f and vid[:6] in f and not f.endswith('.part'):
@@ -77,29 +73,49 @@ def download_media(url: str, quality_key: str, tag: str) -> list:
         logger.error(f"Download error ({quality_key}): {e}")
     return files
 
-def extract_song_name(info) -> str | None:
-    desc = (info.get('description') or '').strip()
-    title = (info.get('title') or '').strip()
-    patterns = [
-        r'(?:آهنگ|موزیک|song|music|track|نوحه|مداحی|سرود)\s*[:\-]\s*([^\n]+)',
-        r'🎵\s*([^\n]+)',
-        r'(?:by|از)\s*[:\-]?\s*([^\n]+)',
-    ]
-    text = desc or title
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            return m.group(1).strip()[:80]
-    if desc:
-        # برداشتن اولین خط معنادار
-        for line in desc.split('\n'):
-            line = line.strip()
-            if len(line) > 3 and not line.startswith('http'):
-                return line[:80]
+def download_audio_only(url: str, tag: str) -> str | None:
+    """فقط صدای ویدیو رو دانلود می‌کنه (برای تشخیص آهنگ از روی صدا)"""
+    outtmpl = f'downloads/{tag}_audio.%(ext)s'
+    ydl_opts = {
+        'format': 'bestaudio',
+        'outtmpl': outtmpl,
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            fn = ydl.prepare_filename(info)
+            base = os.path.splitext(fn)[0] + '.mp3'
+            if os.path.exists(base):
+                return base
+            vid = info.get('id', '')
+            for f in os.listdir('downloads'):
+                if f.startswith(f'{tag}_audio') and f.endswith('.mp3'):
+                    return os.path.join('downloads', f)
+    except Exception as e:
+        logger.error(f"Audio download error: {e}")
+    return None
+
+async def recognize_song(audio_path: str) -> dict | None:
+    """تشخیص آهنگ از روی صدا با shazamio (نیاز به ffmpeg)"""
+    try:
+        from shazamio import Shazam
+        shazam = Shazam()
+        out = await shazam.recognize(audio_path)
+        track = out.get('track', {})
+        title = track.get('title')
+        artist = track.get('subtitle') or (track.get('artists') or [{}])[0].get('name')
+        if title:
+            return {'title': title, 'artist': artist or ''}
+    except Exception as e:
+        logger.error(f"Shazam error: {e}")
     return None
 
 def find_song(query: str) -> str | None:
-    """جستجوی دقیق و دانلود صدای آهنگ از یوتیوب (با کوکی اگه موجود باشه)"""
+    """دانلود صدای آهنگ از یوتیوب (با کوکی اگه موجود باشه)"""
     if not query:
         return None
     cookie_opt = {'cookiefile': 'cookies.txt'} if os.path.exists('cookies.txt') else {}
@@ -156,20 +172,14 @@ def quality_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎵 MP3 (صدا)", callback_data="q_mp3"),
         ],
         [InlineKeyboardButton("🟢 پیدا کردن آهنگ کلیپ", callback_data="find_song")],
-        [InlineKeyboardButton("🔴 ارتباط با سازنده", url=f"https://t.me/{CREATOR_USERNAME.lstrip('@')}")],
     ]
     return InlineKeyboardMarkup(kb)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
-        "🎬 **ربات دانلود اینستاگرام**\n\n"
-        "👇 لینک ریلز یا پست اینستاگرام رو بفرست تا برات دانلودش کنم\n\n"
-        "✨ **قابلیت‌ها:**\n"
-        "• 📹 دانلود با کیفیت دلخواه (۱۰۸۰/۷۲۰/۴۸۰)\n"
-        "• 🖼️ پشتیبانی از پست‌های چندتایی (آلبوم)\n"
-        "• 🎵 استخراج صدای MP3\n"
-        "• 🟢 پیدا کردن و دانلود آهنگ کلیپ\n\n"
-        "🔹 `https://www.instagram.com/reel/...`"
+        "🎬 **ربات دانلود اینستاگرام**\n"
+        "👇 لینک ریلز یا پست رو بفرست\n\n"
+        f"🔴 **ارتباط با سازنده:** @{CREATOR_USERNAME.lstrip('@')}"
     )
     await update.message.reply_text(txt, parse_mode="Markdown")
 
@@ -179,7 +189,6 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    # استخراج لینک اینستاگرام
     m = re.search(r'(https?://)?(www\.)?(instagram\.com|instagr\.am)/(p|reel|tv)/([A-Za-z0-9_-]+)', text)
     if not m:
         await update.message.reply_text("❌ **فقط لینک اینستاگرام قبوله!**\nمثلاً:\n`https://www.instagram.com/reel/...`", parse_mode="Markdown")
@@ -197,11 +206,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status.edit_text(f"❌ **خطا در دریافت لینک:**\n`{str(e)[:120]}`", parse_mode="Markdown")
         return
 
-    # ذخیره برای استفاده در دکمه‌ها
     context.user_data['url'] = url
     context.user_data['info'] = info
 
-    # بررسی آلبوم
     is_album = bool(info.get('entries'))
     n = len(info.get('entries', [])) if is_album else 1
     media_type = "🖼️ آلبوم" if is_album else ("🎵 موزیک" if info.get('duration') is None else "🎬 ویدیو")
@@ -253,7 +260,6 @@ async def quality_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.message.reply_video(video=fh, supports_streaming=True, caption=build_caption(context.user_data.get('info')), parse_mode="Markdown")
             os.remove(files[0])
         else:
-            # آلبوم چندتایی
             media = []
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
@@ -273,40 +279,54 @@ async def find_song_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     if q.data != "find_song":
         return
-    info = context.user_data.get('info')
-    if not info:
+    url = context.user_data.get('url')
+    if not url:
         await q.edit_message_text("❌ اول یه ویدیو دانلود کن تا آهنگش رو پیدا کنم.")
         return
 
-    song = extract_song_name(info)
-    if not song:
-        await q.edit_message_text("❌ نتونستم نام آهنگ رو از کپشن پیدا کنم.")
+    await q.edit_message_text("🟢 **در حال تشخیص آهنگ از روی صدا...**\n🎧 لطفاً صبر کن (۵-۱۰ ثانیه) ⏳", parse_mode="Markdown")
+
+    # ۱. دانلود صدای ویدیو
+    audio = await asyncio.to_thread(download_audio_only, url, 'rec')
+    if not audio:
+        await q.edit_message_text("❌ نتونستم صدای ویدیو رو دانلود کنم.")
         return
 
-    await q.edit_message_text(f"🟢 **در حال جستجوی آهنگ...**\n🎵 `{song}`\n⏳ لطفاً صبر کن 🎧", parse_mode="Markdown")
-    mp3 = await asyncio.to_thread(find_song, song)
-    if mp3:
+    # ۲. تشخیص با shazam (از روی صدا، نه کپشن)
+    song = await recognize_song(audio)
+    if audio and os.path.exists(audio):
         try:
-            with open(mp3, 'rb') as fh:
-                await q.message.reply_audio(audio=fh, title=song[:64], caption=f"🎵 **{song}**\n\n🤖 {BOT_USERNAME}")
-            os.remove(mp3)
-            await q.edit_message_text(f"✅ **آهنگ پیدا و ارسال شد!** 🎵\n\n🤖 {BOT_USERNAME}", parse_mode="Markdown")
-            return
-        except Exception as e:
-            logger.error(f"Send song error: {e}")
+            os.remove(audio)
+        except:
+            pass
 
-    # فال‌بک: لینک‌های جستجو
-    import urllib.parse
-    qs = urllib.parse.quote(song)
-    kb = [
-        [InlineKeyboardButton("🟢 Spotify", url=f"https://open.spotify.com/search/{qs}")],
-        [InlineKeyboardButton("🟢 YouTube Music", url=f"https://music.youtube.com/search?q={qs}")],
-        [InlineKeyboardButton("🟢 Google", url=f"https://www.google.com/search?q={qs}+song")],
-    ]
-    await q.edit_message_text(
-        f"🟢 **آهنگ احتمالی:** `{song}`\n\n🔍 دانلود خودکار لغو شد (نیاز به کوکی یوتیوب). از لینک‌ها دانلود کن:",
-        reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
-    )
+    if song:
+        song_name = f"{song['title']} - {song['artist']}".strip(' -')
+        await q.edit_message_text(f"🟢 **آهنگ پیدا شد!** 🎵\n\n**{song_name}**\n\n⏳ در حال دانلود آهنگ...", parse_mode="Markdown")
+        mp3 = await asyncio.to_thread(find_song, song_name)
+        if mp3:
+            try:
+                with open(mp3, 'rb') as fh:
+                    await q.message.reply_audio(audio=fh, title=song['title'][:64], performer=song.get('artist','')[:64], caption=f"🎵 **{song_name}**\n\n🤖 {BOT_USERNAME}")
+                os.remove(mp3)
+                await q.edit_message_text(f"✅ **آهنگ دانلود و ارسال شد!** 🎵\n\n🤖 {BOT_USERNAME}", parse_mode="Markdown")
+                return
+            except Exception as e:
+                logger.error(f"Send song error: {e}")
+        # فال‌بک لینک
+        import urllib.parse
+        qs = urllib.parse.quote(song_name)
+        kb = [
+            [InlineKeyboardButton("🟢 Spotify", url=f"https://open.spotify.com/search/{qs}")],
+            [InlineKeyboardButton("🟢 YouTube Music", url=f"https://music.youtube.com/search?q={qs}")],
+            [InlineKeyboardButton("🟢 Google", url=f"https://www.google.com/search?q={qs}+song")],
+        ]
+        await q.edit_message_text(
+            f"🟢 **آهنگ تشخیص داده شد:** `{song_name}`\n\n🔍 دانلود خودکار لغو شد (نیاز به کوکی یوتیوب). از لینک‌ها دانلود کن:",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
+        )
+    else:
+        await q.edit_message_text("❌ نتونستم آهنگ رو از روی صدا تشخیص بدم. احتمالاً موزیک اصلی نیست یا شازام پیدا نکرد.", parse_mode="Markdown")
 
 def main():
     os.makedirs('downloads', exist_ok=True)
