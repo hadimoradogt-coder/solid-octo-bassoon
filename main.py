@@ -99,12 +99,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ فقط لینک اینستاگرام قبوله.")
         return
 
+    # 👀 ری‌اکشن زیر پیام لینک
+    try:
+        await update.message.set_reaction("👀")
+    except Exception:
+        pass
+
     for url in urls:
-        status = await update.message.reply_text("⏳ در حال دانلود... لطفاً صبر کن 🎥")
         info = await asyncio.to_thread(get_info, url)
         files = await asyncio.to_thread(get_media, url, 'dl')
         if not files:
-            await status.edit_text("❌ دانلود نشد! لینک رو چک کن.")
+            try:
+                await update.message.set_reaction("❌")
+            except Exception:
+                pass
+            await update.message.reply_text("❌ دانلود نشد! لینک رو چک کن.")
             continue
         caption = build_caption(info)
         try:
@@ -112,9 +121,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ext = os.path.splitext(files[0])[1].lower()
                 with open(files[0], 'rb') as fh:
                     if ext in ('.jpg', '.jpeg', '.png', '.webp'):
-                        await update.message.reply_photo(photo=fh, caption=caption, parse_mode="Markdown")
+                        await update.message.reply_photo(photo=fh, caption=caption)
                     else:
-                        await update.message.reply_video(video=fh, supports_streaming=True, caption=caption, parse_mode="Markdown")
+                        await update.message.reply_video(video=fh, supports_streaming=True, caption=caption)
                 os.remove(files[0])
             else:
                 media = []
@@ -128,10 +137,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for f in files:
                     os.remove(f)
                 if caption:
-                    await update.message.reply_text(caption, parse_mode="Markdown")
-            await status.delete()
+                    await update.message.reply_text(caption)
         except Exception as e:
-            await status.edit_text(f"❌ خطا: {str(e)[:100]}")
+            await update.message.reply_text(f"❌ خطا: {str(e)[:100]}")
+
+    # پاک کردن پیام لینک (دو طرف)
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
 
 def main():
     os.makedirs('downloads', exist_ok=True)
