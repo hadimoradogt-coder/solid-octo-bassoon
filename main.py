@@ -13,27 +13,15 @@ BOT_TOKEN='7651648073:AAEYmoldWDZOaV4VI8bVlO2cJrd8IGOu294'
 BOT_USERNAME = "@Danloderebot"
 CREATOR_USERNAME = "@thehadimoradi"
 
-def extract_supported_urls(text: str) -> list:
-    """استخراج لینک‌های پشتیبانی‌شده: اینستاگرام، تیک‌تاک، یوتیوب، اسپاتیفای"""
+def extract_instagram_urls(text: str) -> list:
+    """استخراج همه لینک‌های اینستاگرام از یک پیام"""
+    pattern = r'(https?://)?(www\.)?(instagram\.com|instagr\.am)/(p|reel|tv|stories)/([A-Za-z0-9_-]+)'
     urls = []
-    for word in re.findall(r'https?://[^\s]+', text):
-        if any(s in word for s in ['instagram', 'instagr.am', 'tiktok', 'youtube', 'youtu.be', 'spotify']):
-            clean = word.rstrip('.,)')
-            if clean not in urls:
-                urls.append(clean)
+    for m in re.findall(pattern, text):
+        url = 'https://www.instagram.com/' + m[2] + '/' + m[3] + '/' + m[4]
+        if url not in urls:
+            urls.append(url)
     return urls
-
-def detect_source(url: str) -> str:
-    """تشخیص منبع لینک"""
-    if 'spotify' in url:
-        return 'spotify'
-    if 'tiktok' in url:
-        return 'tiktok'
-    if 'youtu' in url:
-        return 'youtube'
-    if 'instagram' in url or 'instagr.am' in url:
-        return 'instagram'
-    return 'unknown'
 
 def get_info(url: str) -> dict | None:
     try:
@@ -100,18 +88,37 @@ def build_caption(info) -> str:
     parts.append(f"\n🤖 {BOT_USERNAME}")
     return "\n".join(parts)
 
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """منوی اصلی /start"""
+    kb = [
+        [
+            InlineKeyboardButton("📨 دعوت دوست", switch_inline_query=""),
+            InlineKeyboardButton("➕ اضافه به چت", url=f"https://t.me/{BOT_USERNAME.lstrip('@')}?startgroup=true"),
+        ],
+        [
+            InlineKeyboardButton("⚙️ منو", callback_data="open_menu"),
+        ],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+def settings_keyboard() -> InlineKeyboardMarkup:
+    """زیرمنوی تنظیمات"""
+    kb = [
+        [InlineKeyboardButton("📊 کیفیت: خودکار (بهترین)", callback_data="set_quality")],
+        [InlineKeyboardButton("🔔 اعلان‌ها: روشن", callback_data="toggle_notif")],
+        [InlineKeyboardButton("🎨 تم: تیره", callback_data="set_theme")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
-        "🎬 **ربات دانلود ویدیو**\n\n"
-        "👇 لینک ویدیو رو بفرست (چندتا همزمان هم اوکیه) تا با بهترین کیفیت دانلودش کنم\n\n"
-        "✨ **پلتفرم‌های پشتیبانی‌شده:**\n"
-        "• 📸 اینستاگرام (رییلز/پست/استوری)\n"
-        "• 🎵 تیک‌تاک\n"
-        "• ▶️ یوتیوب (ویدیو/شورتس)\n"
-        "• 🟢 اسپاتیفای (فقط نمایش لینک)\n\n"
-        "🔹 چند لینک رو پشت سر هم بفرست تا همه رو بگیری!"
+        "🎬 **ربات دانلود اینستاگرام**\n\n"
+        "👇 لینک ریلز یا پست اینستاگرام رو بفرست تا با بهترین کیفیت برات دانلودش کنم ✨\n\n"
+        "🔹 `https://www.instagram.com/reel/...`\n\n"
+        "📦 چند لینک رو همزمان بفرست تا همه رو بگیری!"
     )
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
@@ -125,17 +132,38 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     await update.message.reply_text(f"🆔 آیدی تلگرام شما:\n`{uid}`", parse_mode="Markdown")
 
-async def send_one_media(update: Update, url: str, index: int, total: int):
-    """دانلود و ارسال یک مدیا (اینستاگرام/تیک‌تاک/یوتیوب)"""
-    source = detect_source(url)
-    status = await update.message.reply_text(f"⏳ **({index}/{total}) [{source}] در حال دانلود...**\nلطفاً صبر کن 🎥", parse_mode="Markdown")
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "open_menu":
+        txt = (
+            "⚙️ **منوی تنظیمات**\n\n"
+            "از اینجا می‌تونی تنظیمات ربات رو تغییر بدی:\n"
+            "• 📊 کیفیت دانلود\n"
+            "• 🔔 اعلان‌ها\n"
+            "• 🎨 تم رابط کاربری\n\n"
+            "💡 **درباره ربات:**\n"
+            "ربات اختصاصی دانلود اینستاگرام با بالاترین کیفیت و سرعت ⚡️"
+        )
+        await q.edit_message_text(txt, parse_mode="Markdown", reply_markup=settings_keyboard())
+    elif q.data == "back_main":
+        txt = (
+            "🎬 **ربات دانلود اینستاگرام**\n\n"
+            "👇 لینک ریلز یا پست اینستاگرام رو بفرست تا با بهترین کیفیت برات دانلودش کنم ✨\n\n"
+            "🔹 `https://www.instagram.com/reel/...`\n\n"
+            "📦 چند لینک رو همزمان بفرست تا همه رو بگیری!"
+        )
+        await q.edit_message_text(txt, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    elif q.data == "set_quality":
+        await q.answer("📊 کیفیت روی «بهترین» تنظیم شد (پیش‌فرض)", show_alert=True)
+    elif q.data == "toggle_notif":
+        await q.answer("🔔 اعلان‌ها تغییر کرد", show_alert=True)
+    elif q.data == "set_theme":
+        await q.answer("🎨 تم تغییر کرد", show_alert=True)
 
-    # اسپاتیفای: فقط لینک رو میده
-    if source == 'spotify':
-        await status.edit_text(f"🟢 **لینک اسپاتیفای:**\n{url}\n\n⚠️ دانلود مستقیم اسپاتیفای پشتیبانی نمیشه (نیاز به اشتراک).", parse_mode="Markdown",
-                               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🟢 باز کردن در اسپاتیفای", url=url)]]))
-        return url
-
+async def send_one_video(update: Update, url: str, index: int, total: int):
+    """دانلود و ارسال یک ویدیو اینستاگرام"""
+    status = await update.message.reply_text(f"⏳ **({index}/{total}) در حال دانلود...**\nلطفاً صبر کن 🎥", parse_mode="Markdown")
     info = await asyncio.to_thread(get_info, url)
     if not info:
         await status.edit_text(f"❌ **({index}/{total}) لینک نامعتبره یا خصوصیه!**", parse_mode="Markdown")
@@ -170,19 +198,19 @@ async def send_one_media(update: Update, url: str, index: int, total: int):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    urls = extract_supported_urls(text)
+    urls = extract_instagram_urls(text)
     if not urls:
-        await update.message.reply_text("❌ **فقط لینک اینستاگرام/تیک‌تاک/یوتیوب/اسپاتیفای قبوله!**", parse_mode="Markdown")
+        await update.message.reply_text("❌ **فقط لینک اینستاگرام قبوله!**\nمثلاً:\n`https://www.instagram.com/reel/...`", parse_mode="Markdown")
         return
 
     if len(urls) > 1:
         await update.message.reply_text(f"🔢 **{len(urls)} لینک پیدا شد!**\nدر حال دانلود همه‌شون... ⏳", parse_mode="Markdown")
 
     for i, url in enumerate(urls, 1):
-        await send_one_media(update, url, i, len(urls))
+        await send_one_video(update, url, i, len(urls))
 
     if len(urls) > 1:
-        await update.message.reply_text("✅ **همه مدیا آماده شد!**\n\n🤖 " + BOT_USERNAME, parse_mode="Markdown")
+        await update.message.reply_text("✅ **همه ویدیوها آماده شد!**\n\n🤖 " + BOT_USERNAME, parse_mode="Markdown")
 
 def main():
     os.makedirs('downloads', exist_ok=True)
@@ -199,6 +227,7 @@ def main():
     application.add_handler(CommandHandler("contact", contact))
     application.add_handler(CommandHandler("myid", myid))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(menu_callback))
     logger.info("🚀 ربات با موفقیت بالا اومد!")
     application.run_polling()
 
