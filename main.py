@@ -1,4 +1,4 @@
-import os, re, logging, asyncio
+import os, re, logging
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -32,7 +32,8 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     match = re.search(r'(https?://)?(www\.)?(instagram\.com|instagr\.am)/(p|reel|tv)/([A-Za-z0-9_-]+)', text)
     if not match:
-        await update.message.reply_text("❌ لطفاً یه لینک اینستاگرام بفرست."); return
+        await update.message.reply_text("❌ لطفاً یه لینک اینستاگرام بفرست.")
+        return
     url = match.group(0)
     if not url.startswith('http'): url = 'https://' + url
     context.user_data['url'] = url
@@ -41,7 +42,8 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with yt_dlp.YoutubeDL({'quiet': True, 'noplaylist': True}) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
-        await msg.edit_text(f"❌ **خطا:**\n`{str(e)[:120]}`", parse_mode="Markdown"); return
+        await msg.edit_text(f"❌ **خطا:**\n`{str(e)[:120]}`", parse_mode="Markdown")
+        return
     dur = info.get('duration', 0); dur = f"{dur//60}:{dur%60:02d}" if dur else "نامشخص"
     views = info.get('view_count', 0); views = f"{views/1000:.0f}K" if views >= 1000 else views
     info_text = (f"✅ **اطلاعات ویدیو**\n\n📹 {str(info.get('title',''))[:80]}\n👤 {info.get('uploader','ناشناس')}\n⏱ {dur}\n👁 {views}\n\n🔽 **کیفیت رو انتخاب کن:**")
@@ -86,10 +88,10 @@ async def quality_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         ext = os.path.splitext(filename)[1].lower()
         with open(filename, 'rb') as f:
-            if ext in ('.mp3','.m4a','.ogg'): sent = await q.message.reply_audio(audio=f)
-            elif ext in ('.jpg','.jpeg','.png','.webp'): sent = await q.message.reply_photo(photo=f)
-            elif ext in ('.mp4','.mov','.webm'): sent = await q.message.reply_video(video=f, supports_streaming=True)
-            else: sent = await q.message.reply_document(document=f)
+            if ext in ('.mp3','.m4a','.ogg'): await q.message.reply_audio(audio=f)
+            elif ext in ('.jpg','.jpeg','.png','.webp'): await q.message.reply_photo(photo=f)
+            elif ext in ('.mp4','.mov','.webm'): await q.message.reply_video(video=f, supports_streaming=True)
+            else: await q.message.reply_document(document=f)
         context.user_data['last_file'] = filename
     except Exception as e:
         await q.message.reply_text(f"❌ خطا در ارسال: {str(e)[:120]}")
@@ -122,8 +124,6 @@ async def shad_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     os.makedirs('downloads', exist_ok=True)
-    if not BOT_TOKEN or BOT_TOKEN=*** 'YOUR_TOKEN_HERE':
-        logger.error("❌ توکن تنظیم نشده!"); return
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
