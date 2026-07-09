@@ -66,20 +66,27 @@ async def quality_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = context.user_data.get('url')
     if not url:
         await q.edit_message_text("❌ دوباره لینک بفرست."); return
-    qmap = {'q_best': 'best', 'q_med': 'best[height<=720]', 'q_low': 'best[height<=480]', 'q_audio': 'bestaudio'}
+    qmap = {'q_best': 'best', 'q_med': 'best/best[height<=720]', 'q_low': 'best/best[height<=480]', 'q_audio': 'bestaudio'}
     qname = {'q_best': '🎬 1080p', 'q_med': '📺 720p', 'q_low': '📱 480p', 'q_audio': '🎵 صدا'}
     vid_id = re.search(r'/([A-Za-z0-9_-]+)/?$', url)
     vid_id = vid_id.group(1) if vid_id else 'video'
     await q.edit_message_text(f"⏳ **در حال دانلود...**\nکیفیت: {qname[q.data]}", parse_mode="Markdown")
     ydl_opts = {'quiet': True, 'noplaylist': True, 'outtmpl': f'downloads/{vid_id}.%(ext)s', 'format': qmap[q.data]}
     if q.data == 'q_audio':
-        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
     except Exception as e:
-        await q.edit_message_text(f"❌ **خطا در دانلود:**\n`{str(e)[:150]}`", parse_mode="Markdown")
-        return
+        logger.warning(f"Retry with best: {e}")
+        try:
+            with yt_dlp.YoutubeDL({'quiet': True, 'noplaylist': True,
+                                    'outtmpl': f'downloads/{vid_id}.%(ext)s',
+                                    'format': 'best'}) as ydl:
+                ydl.download([url])
+        except Exception as e2:
+            await q.edit_message_text(f"❌ **خطا در دانلود:**\n`{str(e2)[:150]}`", parse_mode="Markdown")
+            return
     filename = find_file(vid_id)
     if not filename:
         await q.edit_message_text("❌ فایل پیدا نشد، دوباره امتحان کن."); return
