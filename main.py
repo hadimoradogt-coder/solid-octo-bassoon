@@ -3,7 +3,7 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-BOT_TOKEN='7651648073:AAFcKGDQC7gkQBr8e-SG78gu0kQ8DH1dcs0'
+BOT_TOKEN='7651648073:AAEYmoldWDZOaV4VI8bVlO2cJrd8IGOu294'
 ADMIN_USER_ID = 5080529808
 
 SHAD_API_URL = ""
