@@ -1,4 +1,4 @@
-import os, re, logging
+import os, re, logging, asyncio
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -13,19 +13,11 @@ SHAD_CHANNEL_ID = ""
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def find_file(vid_id: str) -> str | None:
-    if not os.path.exists('downloads'):
-        return None
-    for f in os.listdir('downloads'):
-        if vid_id in f and not f.endswith('.part'):
-            return os.path.join('downloads', f)
-    return None
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = update.effective_user.id == ADMIN_USER_ID
-    txt = ("🎬 **ربات دانلود اینستاگرام**\n\n📥 لینک ریلز یا پست اینستاگرام بفرست تا برات دانلود کنم.\n\n✨ قابلیت‌ها:\n• 📹 دانلود ریلز و پست (چند کیفیت)\n• 🎵 استخراج صدا\n• 📊 نمایش اطلاعات ویدیو\n")
+    txt = ("🎬 **ربات دانلود اینستاگرام**\n\n📥 لینک ریلز یا پست اینستاگرام بفرست تا برات دانلود کنم.\n\n✨ قابلیت‌ها:\n• 📹 دانلود ریلز و پست\n• 🎵 استخراج صدا\n• 📊 نمایش اطلاعات\n")
     if is_admin:
-        txt += "\n🔐 **شما ادمین هستید:** بعد از دانلود می‌تونی به شاد هم آپلود کنی."
+        txt += "\n🔐 **شما ادمین هستید:** می‌تونی به شاد هم آپلود کنی."
     await update.message.reply_text(txt, parse_mode="Markdown")
 
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,6 +47,26 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.delete()
     await update.message.reply_text(info_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+def do_download(url: str, quality: str) -> str | None:
+    fmt_map = {'best': 'best', 'med': 'best/best[height<=720]', 'low': 'best/best[height<=480]', 'audio': 'bestaudio'}
+    ydl_opts = {'quiet': True, 'noplaylist': True, 'outtmpl': 'downloads/%(id)s.%(ext)s', 'format': fmt_map[quality]}
+    if quality == 'audio':
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            if quality == 'audio':
+                base = os.path.splitext(filename)[0]; filename = base + '.mp3'
+            if not os.path.exists(filename):
+                vid_id = info.get('id', '')
+                for f in os.listdir('downloads'):
+                    if vid_id in f and not f.endswith('.part'):return os.path.join('downloads', f)
+            return filename if os.path.exists(filename) else None
+    except Exception as e:
+        logger.error(f"Download failed: {e}")
+        return None
+
 async def quality_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if q.data == "cancel":
@@ -64,26 +76,12 @@ async def quality_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = context.user_data.get('url')
     if not url:
         await q.edit_message_text("❌ دوباره لینک بفرست."); return
-    qmap = {'q_best': 'best', 'q_med': 'best/best[height<=720]', 'q_low': 'best/best[height<=480]', 'q_audio': 'bestaudio'}
+    qmap = {'q_best': 'best', 'q_med': 'med', 'q_low': 'low', 'q_audio': 'audio'}
     qname = {'q_best': '🎬 1080p', 'q_med': '📺 720p', 'q_low': '📱 480p', 'q_audio': '🎵 صدا'}
-    vid_id = re.search(r'/([A-Za-z0-9_-]+)/?$', url)
-    vid_id = vid_id.group(1) if vid_id else 'video'
     await q.edit_message_text(f"⏳ **در حال دانلود...**\nکیفیت: {qname[q.data]}", parse_mode="Markdown")
-    ydl_opts = {'quiet': True, 'noplaylist': True, 'outtmpl': f'downloads/{vid_id}.%(ext)s', 'format': qmap[q.data]}
-    if q.data == 'q_audio':
-        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except Exception:
-        try:
-            with yt_dlp.YoutubeDL({'quiet': True, 'noplaylist': True, 'outtmpl': f'downloads/{vid_id}.%(ext)s', 'format': 'best'}) as ydl:
-                ydl.download([url])
-        except Exception as e2:
-            await q.edit_message_text(f"❌ **خطا در دانلود:**\n`{str(e2)[:150]}`", parse_mode="Markdown"); return
-    filename = find_file(vid_id)
+    filename = await asyncio.to_thread(do_download, url, qmap[q.data])
     if not filename:
-        await q.edit_message_text("❌ فایل پیدا نشد."); return
+        await q.edit_message_text("❌ دانلود نشد. لینک رو چک کن یا دوباره امتحان کن."); return
     await q.edit_message_text("📤 **در حال ارسال...**", parse_mode="Markdown")
     try:
         ext = os.path.splitext(filename)[1].lower()
