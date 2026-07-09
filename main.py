@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import asyncio
+import subprocess
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -13,6 +14,30 @@ BOT_TOKEN='7651648073:AAEYmoldWDZOaV4VI8bVlO2cJrd8IGOu294'
 BOT_USERNAME = "@Danloderebot"
 CREATOR_USERNAME = "@thehadimoradi"
 
+def find_ffmpeg() -> str | None:
+    """پیدا کردن مسیر ffmpeg (از imageio یا سیستم)"""
+    # ۱. سیستم
+    try:
+        r = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    # ۲. imageio-ffmpeg
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pass
+    return None
+
+FFMPEG_PATH = find_ffmpeg()
+if FFMPEG_PATH:
+    os.environ['FFMPEG_BINARY'] = FFMPEG_PATH
+    logger.info(f"ffmpeg found: {FFMPEG_PATH}")
+else:
+    logger.warning("ffmpeg NOT found - audio features will fail")
+
 def get_info(url: str) -> dict | None:
     try:
         with yt_dlp.YoutubeDL({'quiet': True, 'noplaylist': True}) as ydl:
@@ -22,36 +47,48 @@ def get_info(url: str) -> dict | None:
         return None
 
 def get_audio(url: str, tag: str) -> str | None:
-    """استخراج صدای ویدیو به MP3 (نیاز به ffmpeg)"""
-    outtmpl = f'downloads/{tag}_%(id)s.%(ext)s'
+    """استخراج صدای ویدیو به MP3 (بدون نیاز به ffprobe)"""
+    if not FFMPEG_PATH:
+        logger.error("ffmpeg missing - cannot extract audio")
+        return None
+    raw_tmpl = f'downloads/{tag}_raw_%(id)s.%(ext)s'
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': outtmpl,
+        'outtmpl': raw_tmpl,
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
-        'ffmpeg_location': '/usr/local/bin',
-        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
     }
-    try:
-        import imageio_ffmpeg
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        ydl_opts['ffmpeg_location'] = ffmpeg_exe
-    except Exception:
-        pass
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             fn = ydl.prepare_filename(info)
-            base = os.path.splitext(fn)[0] + '.mp3'
-            if os.path.exists(base):
-                return base
-            for f in os.listdir('downloads'):
-                if f.startswith(tag) and f.endswith('.mp3'):
-                    return os.path.join('downloads', f)
+            # اگر فایل raw پیدا نشد، جستجو
+            if not os.path.exists(fn):
+                vid = info.get('id', '')
+                for f in os.listdir('downloads'):
+                    if f.startswith(f'{tag}_raw') and vid[:6] in f:
+                        fn = os.path.join('downloads', f)
+                        break
+            if not os.path.exists(fn):
+                return None
+            # تبدیل به mp3 با ffmpeg (بدون ffprobe)
+            mp3 = f'downloads/{tag}_audio.mp3'
+            cmd = [FFMPEG_PATH, '-y', '-i', fn, '-vn', '-ab', '192k', mp3]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            # پاک کردن فایل خام
+            try:
+                os.remove(fn)
+            except Exception:
+                pass
+            if r.returncode == 0 and os.path.exists(mp3):
+                return mp3
+            else:
+                logger.error(f"ffmpeg convert failed: {r.stderr[:200]}")
+                return None
     except Exception as e:
         logger.error(f"audio error: {e}")
-    return None
+        return None
 
 def get_video(url: str, tag: str) -> list:
     """دانلود بهترین کیفیت (آلبوم چندتایی پشتیبانی میشه)"""
