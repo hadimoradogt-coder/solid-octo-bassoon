@@ -1,2 +1,4 @@
-python-telegram-bot[job-queue]
+python-telegram-bot
 yt-dlp
+requests
+shazamio
