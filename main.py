@@ -15,15 +15,12 @@ BOT_USERNAME = "@Danloderebot"
 CREATOR_USERNAME = "@thehadimoradi"
 
 def find_ffmpeg() -> str | None:
-    """پیدا کردن مسیر ffmpeg (از imageio یا سیستم)"""
-    # ۱. سیستم
     try:
         r = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True)
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip()
     except Exception:
         pass
-    # ۲. imageio-ffmpeg
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
@@ -37,6 +34,19 @@ if FFMPEG_PATH:
     logger.info(f"ffmpeg found: {FFMPEG_PATH}")
 else:
     logger.warning("ffmpeg NOT found - audio features will fail")
+
+def extract_instagram_urls(text: str) -> list:
+    """استخراج همه لینک‌های اینستاگرام از یک پیام"""
+    pattern = r'(https?://)?(www\.)?(instagram\.com|instagr\.am)/(p|reel|tv)/([A-Za-z0-9_-]+)'
+    found = re.findall(pattern, text)
+    urls = []
+    for m in found:
+        url = m[0] + m[1] + m[2] + '/' + m[3] + '/' + m[4]
+        if not url.startswith('http'):
+            url = 'https://' + url
+        if url not in urls:
+            urls.append(url)
+    return urls
 
 def get_info(url: str) -> dict | None:
     try:
@@ -63,7 +73,6 @@ def get_audio(url: str, tag: str) -> str | None:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             fn = ydl.prepare_filename(info)
-            # اگر فایل raw پیدا نشد، جستجو
             if not os.path.exists(fn):
                 vid = info.get('id', '')
                 for f in os.listdir('downloads'):
@@ -72,11 +81,9 @@ def get_audio(url: str, tag: str) -> str | None:
                         break
             if not os.path.exists(fn):
                 return None
-            # تبدیل به mp3 با ffmpeg (بدون ffprobe)
             mp3 = f'downloads/{tag}_audio.mp3'
             cmd = [FFMPEG_PATH, '-y', '-i', fn, '-vn', '-ab', '192k', mp3]
             r = subprocess.run(cmd, capture_output=True, text=True)
-            # پاک کردن فایل خام
             try:
                 os.remove(fn)
             except Exception:
@@ -173,9 +180,36 @@ async def recognize_song(audio_path: str) -> dict | None:
         title = track.get('title')
         artist = track.get('subtitle') or (track.get('artists') or [{}])[0].get('name')
         if title:
-            return {'title': title, 'artist': artist or ''}
+            return {'title': title, 'artist': artist or '', 'source': 'shazam'}
     except Exception as e:
         logger.error(f"shazam: {e}")
+    return None
+
+def smart_guess_from_caption(info) -> str | None:
+    """استخراج هوشمندانه نام آهنگ از کپشن (فال‌بک وقتی شازام پیدا نکرد)"""
+    desc = (info.get('description') or '').strip()
+    title = (info.get('title') or '').strip()
+    text = desc or title
+    if not text:
+        return None
+    # الگوهای رایج نام آهنگ
+    patterns = [
+        r'(?:آهنگ|موزیک|song|music|track|نوحه|مداحی|سرود)\s*[:\-]\s*([^\n]+)',
+        r'🎵\s*([^\n]+)',
+        r'(?:by|از|خواننده|با)\s*[:\-]?\s*([^\n]+)',
+        r'♬\s*([^\n]+)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()[:80]
+    # حذف هشتگ و لینک و گرفتن اولین خط معنادار
+    for line in text.split('\n'):
+        line = line.strip()
+        line = re.sub(r'#\w+', '', line).strip()
+        line = re.sub(r'http\S+', '', line).strip()
+        if 3 < len(line) < 80:
+            return line
     return None
 
 def build_caption(info) -> str:
@@ -203,12 +237,12 @@ def action_keyboard() -> InlineKeyboardMarkup:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
         "🎬 **ربات دانلود اینستاگرام**\n\n"
-        "👇 لینک ریلز یا پست اینستاگرام رو بفرست تا با بهترین کیفیت برات دانلودش کنم\n\n"
+        "👇 لینک ریلز یا پست اینستاگرام رو بفرست (چندتا همزمان هم اوکیه) تا با بهترین کیفیت دانلودش کنم\n\n"
         "✨ **قابلیت‌ها:**\n"
-        "• 🎬 دانلود بهترین کیفیت\n"
+        "• 🎬 دانلود چند لینک همزمان\n"
         "• 🖼️ پشتیبانی از پست‌های چندتایی\n"
         "• 🎵 دانلود صدای MP3\n"
-        "• 🟢 تشخیص و دانلود آهنگ کلیپ (از روی صدا)\n\n"
+        "• 🟢 تشخیص و دانلود آهنگ (شازام + جستجوی هوشمند)\n\n"
         "🔹 `https://www.instagram.com/reel/...`"
     )
     await update.message.reply_text(txt, parse_mode="Markdown")
@@ -225,33 +259,17 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     await update.message.reply_text(f"🆔 آیدی تلگرام شما:\n`{uid}`", parse_mode="Markdown")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
-    m = re.search(r'(https?://)?(www\.)?(instagram\.com|instagr\.am)/(p|reel|tv)/([A-Za-z0-9_-]+)', text)
-    if not m:
-        await update.message.reply_text("❌ **فقط لینک اینستاگرام قبوله!**\nمثلاً:\n`https://www.instagram.com/reel/...`", parse_mode="Markdown")
-        return
-
-    url = m.group(0)
-    if not url.startswith('http'):
-        url = 'https://' + url
-
-    status = await update.message.reply_text("🔍 **در حال دریافت اطلاعات...**", parse_mode="Markdown")
+async def send_one_video(update: Update, url: str, index: int, total: int):
+    """دانلود و ارسال یک ویدیو (برای چند لینک)"""
+    status = await update.message.reply_text(f"⏳ **({index}/{total}) در حال دانلود...**\nلطفاً صبر کن 🎥", parse_mode="Markdown")
     info = await asyncio.to_thread(get_info, url)
     if not info:
-        await status.edit_text("❌ **لینک نامعتبره یا دانلود نشد!**", parse_mode="Markdown")
-        return
-
-    context.user_data['url'] = url
-    context.user_data['info'] = info
-
-    await status.edit_text("⏳ **در حال دانلود با بهترین کیفیت...**\nلطفاً صبر کن 🎥", parse_mode="Markdown")
+        await status.edit_text(f"❌ **({index}/{total}) لینک نامعتبره!**", parse_mode="Markdown")
+        return None
     files = await asyncio.to_thread(get_video, url, 'dl')
-
     if not files:
-        await status.edit_text("❌ **دانلود نشد!** لینک رو چک کن یا دوباره امتحان کن.", parse_mode="Markdown")
-        return
-
+        await status.edit_text(f"❌ **({index}/{total}) دانلود نشد!**", parse_mode="Markdown")
+        return None
     caption = build_caption(info)
     try:
         if len(files) == 1:
@@ -271,8 +289,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(f)
             await update.message.reply_text("✅ **آلبوم آماده شد!**\n\nبرای آهنگ/صدا از دکمه‌ها استفاده کن.", reply_markup=action_keyboard(), parse_mode="Markdown")
         await status.delete()
+        # ذخیره آخرین لینک برای دکمه‌ها
+        return url
     except Exception as e:
-        await update.message.reply_text(f"❌ خطا در ارسال: {str(e)[:120]}")
+        await update.message.reply_text(f"❌ خطا در ارسال ({index}/{total}): {str(e)[:100]}")
+        return None
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text or ""
+    urls = extract_instagram_urls(text)
+    if not urls:
+        await update.message.reply_text("❌ **فقط لینک اینستاگرام قبوله!**\nمثلاً:\n`https://www.instagram.com/reel/...`", parse_mode="Markdown")
+        return
+
+    if len(urls) > 1:
+        await update.message.reply_text(f"🔢 **{len(urls)} لینک پیدا شد!**\nدر حال دانلود همه‌شون... ⏳", parse_mode="Markdown")
+
+    last_url = None
+    for i, url in enumerate(urls, 1):
+        last_url = await send_one_video(update, url, i, len(urls))
+
+    if last_url:
+        context.user_data['url'] = last_url
+        context.user_data['info'] = await asyncio.to_thread(get_info, last_url)
+        if len(urls) > 1:
+            await update.message.reply_text("✅ **همه ویدیوها آماده شد!**\nبرای آهنگ/صدا روی دکمه آخرین ویدیو بزن.", parse_mode="Markdown")
 
 async def get_mp3_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -286,7 +327,7 @@ async def get_mp3_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = await q.message.reply_text("🎵 **در حال استخراج صدا...**\n⏳ لطفاً صبر کن", parse_mode="Markdown")
     mp3 = await asyncio.to_thread(get_audio, url, 'mp3')
     if not mp3:
-        await status.edit_text("❌ استخراج صدا ناموفق بود.", parse_mode="Markdown")
+        await status.edit_text("❌ استخراج صدا ناموفق بود (احتمالاً ffmpeg روی سرور نصب نیست).", parse_mode="Markdown")
         return
     try:
         with open(mp3, 'rb') as fh:
@@ -302,29 +343,46 @@ async def find_song_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data != "find_song":
         return
     url = context.user_data.get('url')
+    info = context.user_data.get('info')
     if not url:
         await q.message.reply_text("❌ اول یه ویدیو دانلود کن.")
         return
-    status = await q.message.reply_text("🟢 **در حال تشخیص آهنگ از روی صدا...**\n🎧 لطفاً صبر کن (۵-۱۰ ثانیه) ⏳", parse_mode="Markdown")
 
+    status = await q.message.reply_text("🟢 **در حال تشخیص آهنگ...**\n۱. از روی صدا (شازام) 🎧\n⏳ لطفاً صبر کن", parse_mode="Markdown")
     audio = await asyncio.to_thread(get_audio, url, 'rec')
-    if not audio:
-        await status.edit_text("❌ نتونستم صدای ویدیو رو دانلود کنم.", parse_mode="Markdown")
-        return
 
-    song = await recognize_song(audio)
-    if audio and os.path.exists(audio):
+    song = None
+    if audio:
+        song = await recognize_song(audio)
         try:
             os.remove(audio)
-        except:
+        except Exception:
             pass
 
+    # فال‌بک: از کپشن
+    if not song and info:
+        guess = smart_guess_from_caption(info)
+        if guess:
+            await status.edit_text(f"🟡 **شازام پیدا نکرد، جستجو از کپشن:**\n`{guess}`\n⏳ در حال بررسی...", parse_mode="Markdown")
+            mp3 = await asyncio.to_thread(find_song_youtube, guess)
+            if mp3:
+                try:
+                    with open(mp3, 'rb') as fh:
+                        await q.message.reply_audio(audio=fh, title=guess[:64], caption=f"🎵 **{guess}**\n\n🤖 {BOT_USERNAME}")
+                    os.remove(mp3)
+                    await status.edit_text(f"✅ **آهنگ از روی کپشن پیدا و ارسال شد!** 🎵\n\n🤖 {BOT_USERNAME}", parse_mode="Markdown")
+                    return
+                except Exception as e:
+                    logger.error(f"send: {e}")
+            song = {'title': guess, 'artist': '', 'source': 'caption'}
+
     if not song:
-        await status.edit_text("❌ نتونستم آهنگ رو از روی صدا تشخیص بدم. احتمالاً موزیک اصلی نیست.", parse_mode="Markdown")
+        await status.edit_text("❌ نتونستم آهنگ رو پیدا کنم. احتمالاً موزیک اصلی نیست یا کپشن نامشخصه.", parse_mode="Markdown")
         return
 
     song_name = f"{song['title']} - {song['artist']}".strip(' -')
-    await status.edit_text(f"🟢 **آهنگ پیدا شد!** 🎵\n\n**{song_name}**\n\n⏳ در حال دانلود آهنگ...", parse_mode="Markdown")
+    src = song.get('source', 'shazam')
+    await status.edit_text(f"🟢 **آهنگ پیدا شد** (از {src})! 🎵\n\n**{song_name}**\n\n⏳ در حال دانلود آهنگ...", parse_mode="Markdown")
 
     mp3 = await asyncio.to_thread(find_song_youtube, song_name)
     if mp3:
